@@ -1,5 +1,6 @@
 package cn.cheungchingyin.autorename;
 
+import cn.hutool.core.date.DateTime;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
@@ -8,14 +9,11 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
 import java.util.Date;
 import java.util.List;
 import java.util.Properties;
 import java.util.Scanner;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.*;
 
 /**
  * @Author 张正贤
@@ -24,6 +22,24 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Slf4j
 public class AutoRenameMain {
+
+    /**
+     * 核心数
+     */
+    private static final int CORE_POOL_SIZE = 5;
+    /**
+     * 最大线程数(当前最大核心数)
+     */
+    private static final int MAX_POOL_SIZE = Runtime.getRuntime().availableProcessors();
+    /**
+     * 心跳时间
+     */
+    private static final Long KEEP_ALIVE_TIME = 1L;
+
+    /**
+     * 每个线程处理列表条数
+     */
+    private static final int DEAL_LIST_SIZE = 500;
 
     public static void main(String[] args) {
         InputStream propertiesInputStream;
@@ -74,29 +90,31 @@ public class AutoRenameMain {
             log.info("------即将取消------", fileList.size());
             return;
         }
+        // 计时开始
+        long startTime = System.currentTimeMillis();
         log.info("------正在处理，请勿关闭软件和电源------");
         String finalDistDirPath = destDirPath;
-        // 遍历文件
-        fileList.forEach(file -> {
-            Path filePath = file.toPath();
-            // 文件创建时间
-            Date createDate = new Date();
-            try {
-                // 获得文件配置信息
-                BasicFileAttributes fileAttributes = Files.readAttributes(filePath, BasicFileAttributes.class);
-                // 文件创建时间
-                FileTime fileTime = fileAttributes.creationTime();
-                createDate.setTime(fileTime.toMillis());
-            } catch (IOException e) {
-                log.error("------读取文件属性信息失败，文件地址：{}------", file.getAbsolutePath());
-                throw new RuntimeException(e);
-            }
-            // 根据输出地址/yyyy/yyyy-MM-dd的格式进行归档
-            File destFile = new File(finalDistDirPath+ "\\" + DateUtil.format(createDate, "yyyy") + "\\" + DateUtil.format(createDate, "yyyy-MM-dd") + "\\" + file.getName());
-            log.info(destFile.getAbsolutePath());
-            // 输出到目的地址
-            FileUtil.copy(file, destFile, true);
-        });
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(CORE_POOL_SIZE, MAX_POOL_SIZE, KEEP_ALIVE_TIME, TimeUnit.SECONDS, new ArrayBlockingQueue<>(100));
+        int beginIndex = 0;
+        int endIndex = 0;
+        CopyFileTask copyFileTask;
+        // 列表切片加入线程池中进行处理
+        while (endIndex != fileList.size()) {
+            endIndex = Math.min(endIndex + DEAL_LIST_SIZE, fileList.size());
+            List<File> tempList = fileList.subList(beginIndex, endIndex);
+            copyFileTask = new CopyFileTask(tempList, finalDistDirPath);
+            executor.submit(copyFileTask);
+            beginIndex = endIndex;
+        }
+        // 关闭线程池
+        executor.shutdown();
+        // 如果没有执行完就一直循环
+        while (!executor.isTerminated()) {
+        }
         log.info("------文件整理完成------");
+        // 消耗时间
+        long consumedTime = System.currentTimeMillis() - startTime;
+        log.info("------耗费时间:{}分钟------", DateUtil.minute(new Date(consumedTime)));
+
     }
 }
